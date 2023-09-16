@@ -5,10 +5,10 @@ edition = "2021"
 
 [lib]
 name = "network_spy_proxy"
-crate-type = [ "staticlib" ]
+crate-type = [ "cdylib" ]
 
 [dependencies]
-hudsucker = { path = "../hudsucker", features = ["openssl-ca", "rustls-client"] }
+hudsucker = { path = "./hudsucker", features = ["openssl-ca", "rustls-client"] }
 async-compression = { version = "0.3.7", features = ["tokio", "brotli", "gzip", "zlib", "zstd"], optional = true }
 async-trait = "0.1.7"
 bstr = "0.2.1"
