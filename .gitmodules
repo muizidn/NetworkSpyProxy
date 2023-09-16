@@ -1,3 +1,6 @@
 [submodule "hudsucker"]
 	path = hudsucker
 	url = https://github.com/muizidn/hudsucker.git
+[submodule "openssl"]
+	path = openssl
+	url = https://github.com/openssl/openssl.git
