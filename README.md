@@ -1,0 +1,1 @@
+Generate C api using `make cbindgen_api` to use it in Swift
