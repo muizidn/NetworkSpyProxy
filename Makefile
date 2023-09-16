@@ -11,3 +11,6 @@ gen_lib:
 	make cbindgen_api
 	make build_lib_release
 	
+build_openssl:
+	cd openssl && ./Configure && make
+	echo "Success build openssl"
