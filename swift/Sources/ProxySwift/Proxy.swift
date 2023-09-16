@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import NetworkSpyProxyRust
+import ProxyRust
 
 private let kDefaultPort: UInt16 = 9090
 
@@ -51,7 +51,13 @@ public final class Proxy {
             self.proxy = proxy
         }
     }
-    
+
+    // Platform-specific function to check if a port is open (Linux)
+    #if os(Linux)
+    private func isPortOpen(port: in_port_t) -> Bool {
+        return false;
+    }
+    #else
     // https://stackoverflow.com/a/65162953
     private func isPortOpen(port: in_port_t) -> Bool {
         
@@ -77,6 +83,7 @@ public final class Proxy {
         Darwin.close(socketFileDescriptor)
         return isOpen
     }
+    #endif
     
     private typealias RustCallback = @convention(c) (
         UInt8,

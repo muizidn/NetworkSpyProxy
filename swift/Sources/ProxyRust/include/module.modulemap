@@ -1,4 +1,4 @@
-module NetworkSpyProxyRust {
+module ProxyRust {
     header "api.h"
     export *
 }
