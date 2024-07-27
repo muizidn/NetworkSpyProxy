@@ -38,7 +38,7 @@ impl Proxy {
     pub fn run_proxy(&mut self, listener: Arc<dyn TrafficListener + Send + Sync>) {
         tracing_subscriber::fmt::init();
 
-        let runtime = Builder::new_current_thread()
+        let runtime = Builder::new_multi_thread()
             .worker_threads(4)
             .thread_name("network-spy-proxy")
             .thread_stack_size(3 * 1024 * 1024)
