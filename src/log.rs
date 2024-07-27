@@ -1,6 +1,8 @@
 use hudsucker::{
     certificate_authority::RcgenAuthority,
+    hyper::{Request, Response},
     rcgen::{CertificateParams, KeyPair},
+    tokio_tungstenite::tungstenite::Message,
     *,
 };
 use std::net::SocketAddr;
@@ -12,6 +14,33 @@ async fn shutdown_signal() {
         .await
         .expect("Failed to install CTRL+C signal handler");
 }
+
+#[derive(Clone)]
+struct LogHandler;
+
+impl HttpHandler for LogHandler {
+    async fn handle_request(
+        &mut self,
+        _ctx: &HttpContext,
+        req: Request<Body>,
+    ) -> RequestOrResponse {
+        println!("{:?}", req);
+        req.into()
+    }
+
+    async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
+        println!("{:?}", res);
+        res
+    }
+}
+
+impl WebSocketHandler for LogHandler {
+    async fn handle_message(&mut self, _ctx: &WebSocketContext, msg: Message) -> Option<Message> {
+        println!("{:?}", msg);
+        Some(msg)
+    }
+}
+
 
 pub fn run_proxy() {
     tracing_subscriber::fmt::init();
@@ -39,6 +68,8 @@ pub fn run_proxy() {
         .with_addr(SocketAddr::from(([127, 0, 0, 1], 3000)))
         .with_rustls_client()
         .with_ca(ca)
+        .with_http_handler(LogHandler)
+        .with_websocket_handler(LogHandler)
         .with_graceful_shutdown(shutdown_signal())
         .build();
 
