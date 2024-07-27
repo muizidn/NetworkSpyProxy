@@ -1,7 +1,6 @@
 use core::{hash, str};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use async_trait::async_trait;
 use hudsucker::{
     hyper::{Request, Response},
     tokio_tungstenite::tungstenite::Message,
@@ -90,7 +89,6 @@ async fn duplicate_res(res: Response<Body>) -> ResponseDuplicate {
     ResponseDuplicate { origin: res, duplicate: res1 }
 }
 
-// #[async_trait]
 impl HttpHandler for TrafficInterceptor {
     async fn handle_request(&mut self, _ctx: &HttpContext, req: Request<Body> ) -> RequestOrResponse {
         let d = duplicate_req(req).await;
@@ -117,7 +115,6 @@ impl HttpHandler for TrafficInterceptor {
     }
 }
 
-// #[async_trait]
 impl WebSocketHandler for TrafficInterceptor {
     async fn handle_message(&mut self, _ctx: &WebSocketContext, msg: Message) -> Option<Message> {
         println!("{:?}", msg);

@@ -20,7 +20,6 @@ tracing = { version = "0.1.35", features = ["log"] }
 tracing-subscriber = "0.3.15"
 rustls-pemfile = "1.0.1"
 bytes = "1.6.1"
-async-trait = "0.1.81"
 
 [build-dependencies]
 cc = "1.0"
