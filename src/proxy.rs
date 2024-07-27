@@ -1,13 +1,18 @@
-use bytes::Bytes;
 use hudsucker::{
     certificate_authority::RcgenAuthority,
-    hyper::{Request, Response},
     rcgen::{CertificateParams, KeyPair},
-    tokio_tungstenite::tungstenite::Message,
-    *,
 };
-use std::{net::SocketAddr, sync::{atomic::{AtomicBool, Ordering}, Arc}};
-use tokio::{runtime::{Builder, Runtime}, sync::Notify};
+use std::{
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
+use tokio::{
+    runtime::{Builder, Handle, Runtime},
+    sync::Notify,
+};
 use tracing::*;
 
 use crate::traffic::{TrafficInterceptor, TrafficListener};
@@ -38,14 +43,7 @@ impl Proxy {
     pub fn run_proxy(&mut self, listener: Arc<dyn TrafficListener + Send + Sync>) {
         tracing_subscriber::fmt::init();
 
-        let runtime = Builder::new_multi_thread()
-            .worker_threads(4)
-            .thread_name("network-spy-proxy")
-            .thread_stack_size(3 * 1024 * 1024)
-            .enable_io()
-            .enable_time()
-            .build()
-            .unwrap();
+        let runtime = Handle::current();
 
         let key_pair = KeyPair::from_pem(self.key_pair).expect("Failed to parse private key");
         let ca_cert = CertificateParams::from_ca_cert_pem(self.ca_cert)
@@ -67,11 +65,11 @@ impl Proxy {
             // .with_graceful_shutdown(self.shutdown_signal())
             .build();
 
-            runtime.block_on(async {
-                if let Err(e) = proxy.start().await {
-                    error!("{}", e);
-                }
-            });
+        runtime.block_on(async {
+            if let Err(e) = proxy.start().await {
+                error!("{}", e);
+            }
+        });
     }
 
     pub fn stop_proxy(&mut self) {
