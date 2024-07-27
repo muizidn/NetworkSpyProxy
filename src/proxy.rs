@@ -40,10 +40,8 @@ impl Proxy {
         self.notify.notified().await;
     }
 
-    pub fn run_proxy(&mut self, listener: Arc<dyn TrafficListener + Send + Sync>) {
+    pub async fn run_proxy(&mut self, listener: Arc<dyn TrafficListener + Send + Sync>) {
         tracing_subscriber::fmt::init();
-
-        let runtime = Handle::current();
 
         let key_pair = KeyPair::from_pem(self.key_pair).expect("Failed to parse private key");
         let ca_cert = CertificateParams::from_ca_cert_pem(self.ca_cert)
@@ -65,11 +63,9 @@ impl Proxy {
             // .with_graceful_shutdown(self.shutdown_signal())
             .build();
 
-        runtime.block_on(async {
-            if let Err(e) = proxy.start().await {
-                error!("{}", e);
-            }
-        });
+        if let Err(e) = proxy.start().await {
+            error!("{}", e);
+        }
     }
 
     pub fn stop_proxy(&mut self) {
