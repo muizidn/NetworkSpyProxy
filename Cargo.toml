@@ -3,10 +3,6 @@ name = "network_spy_proxy"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-name = "network_spy_proxy"
-crate-type = ["cdylib"]
-
 [dependencies]
 hudsucker = { path = "./hudsucker", features = ["openssl-ca", "rustls-client"] }
 bstr = "1.0.0"
