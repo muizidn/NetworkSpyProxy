@@ -11,7 +11,10 @@ use http_body_util::{BodyExt, Full};
 use tracing::warn;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub trait TrafficListener: Sync + Send {
     fn request(&self, id: u64, request: Request<Bytes>, intercepted: bool, client_addr: String);
@@ -22,11 +25,12 @@ pub trait TrafficListener: Sync + Send {
 pub struct TrafficInterceptor {
     listener: Arc<dyn TrafficListener>,
     allow_list: Arc<RwLock<Vec<String>>>,
+    request_id: Option<u64>,
 }
 
 impl TrafficInterceptor {
     pub fn new(listener: Arc<dyn TrafficListener>, allow_list: Arc<RwLock<Vec<String>>>) -> Self {
-        TrafficInterceptor { listener, allow_list }
+        TrafficInterceptor { listener, allow_list, request_id: None }
     }
 }
 struct RequestDuplicate {
@@ -94,40 +98,46 @@ async fn duplicate_res(res: Response<Body>) -> ResponseDuplicate {
 
 impl HttpHandler for TrafficInterceptor {
     async fn handle_request(&mut self, _ctx: &HttpContext, req: Request<Body> ) -> RequestOrResponse {
+        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+        self.request_id = Some(id);
+
         let d = duplicate_req(req).await;
         let original_request = d.origin;
         let duplicated_request = d.duplicate;
 
-        let mut hasher = DefaultHasher::new();
-        _ctx.hash(&mut hasher);
-        self.listener.request(hasher.finish(), duplicated_request, _ctx.intercepted, _ctx.client_addr.to_string());
+        self.listener.request(id, duplicated_request, _ctx.intercepted, _ctx.client_addr.to_string());
 
         RequestOrResponse::Request(original_request)
     }
 
     async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
+        let id = self.request_id.unwrap_or_else(|| NEXT_ID.fetch_add(1, Ordering::SeqCst));
+
         let d = duplicate_res(res).await;
         let original_response = d.origin;
         let duplicated_response = d.duplicate;
 
-        let mut hasher = DefaultHasher::new();
-        _ctx.hash(&mut hasher);
-        self.listener.response(hasher.finish(), duplicated_response, _ctx.intercepted, _ctx.client_addr.to_string());
+        self.listener.response(id, duplicated_response, _ctx.intercepted, _ctx.client_addr.to_string());
 
         original_response
     }
 
     async fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> bool {
+        if _ctx.intercepted {
+            return true;
+        }
+
         let uri = req.uri().to_string();
+        let host = req.headers().get("host").and_then(|h| h.to_str().ok()).unwrap_or("");
         let allow_list = self.allow_list.read().await;
 
         for domain in allow_list.iter() {
-            if uri.contains(domain) {
+            if uri.contains(domain) || host.contains(domain) {
                 return true;
             }
         }
 
-        warn!("Interception NOT allowed for domain in URI: {}. Tunneling instead.", uri);
+        warn!("Interception NOT allowed for domain in URI: {} or Host: {}. Tunneling instead.", uri, host);
         false
     }
 }
