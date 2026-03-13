@@ -9,9 +9,7 @@ use std::{
         Arc,
     },
 };
-use tokio::{
-    sync::Notify,
-};
+use tokio::sync::{Notify, RwLock};
 use tracing::*;
 
 use crate::traffic::{TrafficInterceptor, TrafficListener};
@@ -35,11 +33,17 @@ impl Proxy {
         }
     }
 
+    /*
     async fn shutdown_signal(&self) {
         self.notify.notified().await;
     }
+    */
 
-    pub async fn run_proxy(&mut self, listener: Arc<dyn TrafficListener + Send + Sync>) {
+    pub async fn run_proxy(
+        &mut self,
+        listener: Arc<dyn TrafficListener + Send + Sync>,
+        allow_list: Arc<RwLock<Vec<String>>>,
+    ) {
         tracing_subscriber::fmt::init();
 
         let key_pair = KeyPair::from_pem(self.key_pair).expect("Failed to parse private key");
@@ -49,8 +53,8 @@ impl Proxy {
             .expect("Failed to sign CA certificate");
 
         let ca = RcgenAuthority::new(key_pair, ca_cert, 1_000);
-
-        let traffic = TrafficInterceptor::new(listener);
+ 
+        let traffic = TrafficInterceptor::new(listener, allow_list);
 
         let proxy = hudsucker::Proxy::builder()
             .with_addr(SocketAddr::from(([127, 0, 0, 1], self.port)))
@@ -72,21 +76,3 @@ impl Proxy {
         self.notify.notify_one();
     }
 }
-
-// struct MyTrafficListener;
-
-// impl TrafficListener for MyTrafficListener {
-//     fn request(&self, id: u64, request: Request<Bytes>) {
-//         println!("Received request with id {}: {:?}", id, request);
-//     }
-
-//     fn response(&self, id: u64, response: Response<Bytes>) {
-//         println!("Sending response with id {}: {:?}", id, response);
-//     }
-// }
-
-// fn main() {
-//     let proxy = Proxy::new("path/to/cert".to_string(), 3000);
-//     let listener = Arc::new(MyTrafficListener);
-//     proxy.run_proxy(listener);
-// }

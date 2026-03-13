@@ -1,4 +1,4 @@
-use core::{hash, str};
+use core::str;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use hudsucker::{
@@ -8,22 +8,25 @@ use hudsucker::{
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
+use tracing::warn;
 
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub trait TrafficListener: Sync + Send {
-    fn request(&self, id: u64, request: Request<Bytes>);
-    fn response(&self, id: u64, response: Response<Bytes>);
+    fn request(&self, id: u64, request: Request<Bytes>, intercepted: bool, client_addr: String);
+    fn response(&self, id: u64, response: Response<Bytes>, intercepted: bool, client_addr: String);
 }
 
 #[derive(Clone)]
 pub struct TrafficInterceptor {
     listener: Arc<dyn TrafficListener>,
+    allow_list: Arc<RwLock<Vec<String>>>,
 }
 
 impl TrafficInterceptor {
-    pub fn new(listener: Arc<dyn TrafficListener>) -> Self {
-        TrafficInterceptor { listener }
+    pub fn new(listener: Arc<dyn TrafficListener>, allow_list: Arc<RwLock<Vec<String>>>) -> Self {
+        TrafficInterceptor { listener, allow_list }
     }
 }
 struct RequestDuplicate {
@@ -97,7 +100,7 @@ impl HttpHandler for TrafficInterceptor {
 
         let mut hasher = DefaultHasher::new();
         _ctx.hash(&mut hasher);
-        self.listener.request(hasher.finish(), duplicated_request);
+        self.listener.request(hasher.finish(), duplicated_request, _ctx.intercepted, _ctx.client_addr.to_string());
 
         RequestOrResponse::Request(original_request)
     }
@@ -109,9 +112,23 @@ impl HttpHandler for TrafficInterceptor {
 
         let mut hasher = DefaultHasher::new();
         _ctx.hash(&mut hasher);
-        self.listener.response(hasher.finish(), duplicated_response);
+        self.listener.response(hasher.finish(), duplicated_response, _ctx.intercepted, _ctx.client_addr.to_string());
 
         original_response
+    }
+
+    async fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> bool {
+        let uri = req.uri().to_string();
+        let allow_list = self.allow_list.read().await;
+
+        for domain in allow_list.iter() {
+            if uri.contains(domain) {
+                return true;
+            }
+        }
+
+        warn!("Interception NOT allowed for domain in URI: {}. Tunneling instead.", uri);
+        false
     }
 }
 
