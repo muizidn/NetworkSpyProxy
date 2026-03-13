@@ -45,7 +45,13 @@ async fn duplicate_req(req: Request<Body>) -> RequestDuplicate {
     let old_method = &parts.method;
     let old_headers = &parts.headers;
     let old_ver = &parts.version;
-    let old_bytes = body.collect().await.unwrap().to_bytes();
+    let old_bytes = match body.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            warn!("Failed to collect request body: {}", e);
+            Bytes::new()
+        }
+    };
     let new_bytes = old_bytes.clone();
 
     let mut req1 = Request::builder()
@@ -76,7 +82,13 @@ async fn duplicate_res(res: Response<Body>) -> ResponseDuplicate {
     let old_status = &parts.status.clone();
     let old_headers = &parts.headers;
     let old_ver = &parts.version;
-    let old_bytes = body.collect().await.unwrap().to_bytes();
+    let old_bytes = match body.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            warn!("Failed to collect response body: {}", e);
+            Bytes::new()
+        }
+    };
 
     let new_bytes = old_bytes.clone();
 
