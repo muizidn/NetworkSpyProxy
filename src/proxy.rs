@@ -1,6 +1,7 @@
 use hudsucker::{
     certificate_authority::RcgenAuthority,
-    rcgen::{CertificateParams, KeyPair},
+    rcgen::{KeyPair, Issuer},
+    rustls::crypto::aws_lc_rs,
 };
 use std::{
     net::SocketAddr,
@@ -33,38 +34,27 @@ impl Proxy {
         }
     }
 
-    /*
-    async fn shutdown_signal(&self) {
-        self.notify.notified().await;
-    }
-    */
-
     pub async fn run_proxy(
         &mut self,
         listener: Arc<dyn TrafficListener + Send + Sync>,
         allow_list: Arc<RwLock<Vec<String>>>,
     ) {
-        tracing_subscriber::fmt::init();
+        // tracing_subscriber::fmt::init(); // Handled by caller or globally
 
         let key_pair = KeyPair::from_pem(self.key_pair).expect("Failed to parse private key");
-        let ca_cert = CertificateParams::from_ca_cert_pem(self.ca_cert)
-            .expect("Failed to parse CA certificate")
-            .self_signed(&key_pair)
-            .expect("Failed to sign CA certificate");
-
-        let ca = RcgenAuthority::new(key_pair, ca_cert, 1_000);
+        let issuer = Issuer::from_ca_cert_pem(self.ca_cert, key_pair).expect("Failed to parse CA certificate");
+        let ca = RcgenAuthority::new(issuer, 1_000, aws_lc_rs::default_provider());
  
         let traffic = TrafficInterceptor::new(listener, allow_list);
 
         let proxy = hudsucker::Proxy::builder()
             .with_addr(SocketAddr::from(([127, 0, 0, 1], self.port)))
-            .with_rustls_client()
             .with_ca(ca)
+            .with_rustls_connector(aws_lc_rs::default_provider())
             .with_http_handler(traffic.clone())
             .with_websocket_handler(traffic.clone())
-            // FIXME: I don't know how to fix yet 🥹
-            // .with_graceful_shutdown(self.shutdown_signal())
-            .build();
+            .build()
+            .expect("Failed to build proxy");
 
         if let Err(e) = proxy.start().await {
             error!("{}", e);
