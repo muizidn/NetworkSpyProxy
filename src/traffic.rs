@@ -1,5 +1,4 @@
-use core::str;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::future::Future;
 
 use hudsucker::{
     hyper::{Request, Response},
@@ -14,11 +13,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
+use async_trait::async_trait;
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+#[async_trait]
 pub trait TrafficListener: Sync + Send {
-    fn request(&self, id: u64, request: Request<Bytes>, intercepted: bool, client_addr: String);
-    fn response(&self, id: u64, response: Response<Bytes>, intercepted: bool, client_addr: String);
+    async fn request(&self, id: u64, request: Request<Bytes>, intercepted: bool, client_addr: String);
+    async fn response(&self, id: u64, response: Response<Bytes>, intercepted: bool, client_addr: String);
 }
 
 #[derive(Clone)]
@@ -26,11 +28,13 @@ pub struct TrafficInterceptor {
     listener: Arc<dyn TrafficListener>,
     allow_list: Arc<RwLock<Vec<String>>>,
     request_id: Option<u64>,
+    log_terminal: bool,
 }
 
 impl TrafficInterceptor {
     pub fn new(listener: Arc<dyn TrafficListener>, allow_list: Arc<RwLock<Vec<String>>>) -> Self {
-        TrafficInterceptor { listener, allow_list, request_id: None }
+        let log_terminal = std::env::var("LOG_TRAFFIC_TERMINAL").map(|v| v == "1").unwrap_or(false);
+        TrafficInterceptor { listener, allow_list, request_id: None, log_terminal }
     }
 }
 struct RequestDuplicate {
@@ -109,54 +113,82 @@ async fn duplicate_res(res: Response<Body>) -> ResponseDuplicate {
 }
 
 impl HttpHandler for TrafficInterceptor {
-    async fn handle_request(&mut self, _ctx: &HttpContext, req: Request<Body> ) -> RequestOrResponse {
+    fn handle_request(&mut self, _ctx: &HttpContext, req: Request<Body> ) -> impl Future<Output = RequestOrResponse> + Send {
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
         self.request_id = Some(id);
 
-        let d = duplicate_req(req).await;
-        let original_request = d.origin;
-        let duplicated_request = d.duplicate;
+        let listener = Arc::clone(&self.listener);
+        let client_addr = _ctx.client_addr.to_string();
+        let intercepted = _ctx.intercepted;
+        let log_terminal = self.log_terminal;
 
-        self.listener.request(id, duplicated_request, _ctx.intercepted, _ctx.client_addr.to_string());
+        async move {
+            if log_terminal {
+                println!("\x1b[32m[REQUEST  #{}]\x1b[0m {} {}", id, req.method(), req.uri());
+            }
 
-        RequestOrResponse::Request(original_request)
+            let d = duplicate_req(req).await;
+            listener.request(id, d.duplicate, intercepted, client_addr).await;
+
+            RequestOrResponse::Request(d.origin)
+        }
     }
 
-    async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
+    fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> impl Future<Output = Response<Body>> + Send {
         let id = self.request_id.unwrap_or_else(|| NEXT_ID.fetch_add(1, Ordering::SeqCst));
 
-        let d = duplicate_res(res).await;
-        let original_response = d.origin;
-        let duplicated_response = d.duplicate;
+        let listener = Arc::clone(&self.listener);
+        let client_addr = _ctx.client_addr.to_string();
+        let intercepted = _ctx.intercepted;
+        let log_terminal = self.log_terminal;
 
-        self.listener.response(id, duplicated_response, _ctx.intercepted, _ctx.client_addr.to_string());
+        async move {
+            if log_terminal {
+                println!("\x1b[34m[RESPONSE #{}]\x1b[0m {}", id, res.status());
+            }
 
-        original_response
+            let d = duplicate_res(res).await;
+            listener.response(id, d.duplicate, intercepted, client_addr).await;
+
+            d.origin
+        }
     }
 
-    async fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> bool {
-        if _ctx.intercepted {
-            return true;
-        }
-
+    fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> impl Future<Output = bool> + Send {
+        let intercepted = _ctx.intercepted;
         let uri = req.uri().to_string();
-        let host = req.headers().get("host").and_then(|h| h.to_str().ok()).unwrap_or("");
-        let allow_list = self.allow_list.read().await;
+        let host = req.headers().get("host").and_then(|h| h.to_str().ok()).map(|s| s.to_string()).unwrap_or_default();
+        let allow_list = Arc::clone(&self.allow_list);
 
-        for domain in allow_list.iter() {
-            if uri.contains(domain) || host.contains(domain) {
+        async move {
+            if intercepted {
                 return true;
             }
-        }
 
-        warn!("Interception NOT allowed for domain in URI: {} or Host: {}. Tunneling instead.", uri, host);
-        false
+            let allow_list_guard = allow_list.read().await;
+
+            for domain in allow_list_guard.iter() {
+                if uri.contains(domain) || host.contains(domain) {
+                    return true;
+                }
+            }
+
+            warn!("Interception NOT allowed for domain in URI: {} or Host: {}. Tunneling instead.", uri, host);
+            false
+        }
     }
 }
 
 impl WebSocketHandler for TrafficInterceptor {
-    async fn handle_message(&mut self, _ctx: &WebSocketContext, msg: Message) -> Option<Message> {
-        println!("{:?}", msg);
-        Some(msg)
+    fn handle_message(&mut self, _ctx: &WebSocketContext, msg: Message) -> impl Future<Output = Option<Message>> + Send {
+        let log_terminal = self.log_terminal;
+        let msg_clone = msg.clone();
+        
+        async move {
+            if log_terminal {
+                println!("\x1b[35m[WS MESSAGE]\x1b[0m {:?}", msg_clone);
+            }
+            Some(msg_clone)
+        }
     }
 }
