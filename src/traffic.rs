@@ -19,8 +19,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[async_trait]
 pub trait TrafficListener: Sync + Send {
-    async fn request(&self, id: u64, request: Request<Bytes>, intercepted: bool, client_addr: String);
-    async fn response(&self, id: u64, response: Response<Bytes>, intercepted: bool, client_addr: String);
+    async fn request(&self, id: u64, request: Request<Bytes>, intercepted: bool, client_addr: String) -> Request<Bytes>;
+    async fn response(&self, id: u64, response: Response<Bytes>, intercepted: bool, client_addr: String) -> Response<Bytes>;
 }
 
 #[derive(Clone)]
@@ -128,9 +128,16 @@ impl HttpHandler for TrafficInterceptor {
             }
 
             let d = duplicate_req(req).await;
-            listener.request(id, d.duplicate, intercepted, client_addr).await;
+            let modified = listener.request(id, d.duplicate, intercepted, client_addr).await;
 
-            RequestOrResponse::Request(d.origin)
+            let (mut parts, _) = d.origin.into_parts();
+            let (m_parts, m_body) = modified.into_parts();
+            parts.method = m_parts.method;
+            parts.uri = m_parts.uri;
+            parts.version = m_parts.version;
+            parts.headers = m_parts.headers;
+
+            RequestOrResponse::Request(Request::from_parts(parts, Body::from(Full::new(m_body))))
         }
     }
 
@@ -148,9 +155,15 @@ impl HttpHandler for TrafficInterceptor {
             }
 
             let d = duplicate_res(res).await;
-            listener.response(id, d.duplicate, intercepted, client_addr).await;
+            let modified = listener.response(id, d.duplicate, intercepted, client_addr).await;
 
-            d.origin
+            let (mut parts, _) = d.origin.into_parts();
+            let (m_parts, m_body) = modified.into_parts();
+            parts.status = m_parts.status;
+            parts.version = m_parts.version;
+            parts.headers = m_parts.headers;
+
+            Response::from_parts(parts, Body::from(Full::new(m_body)))
         }
     }
 
