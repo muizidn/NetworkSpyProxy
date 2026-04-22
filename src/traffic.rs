@@ -7,7 +7,7 @@ use hudsucker::{
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use tracing::warn;
+use tracing::{warn, info};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,6 +21,8 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 pub trait TrafficListener: Sync + Send {
     async fn request(&self, id: u64, request: Request<Bytes>, intercepted: bool, client_addr: String) -> Request<Bytes>;
     async fn response(&self, id: u64, response: Response<Bytes>, intercepted: bool, client_addr: String) -> Response<Bytes>;
+    async fn get_client_name(&self, _client_addr: &str) -> String { "Unknown".to_string() }
+    async fn should_intercept(&self, _uri: &str, _host: &str, _client_addr: &str) -> bool { true }
 }
 
 #[derive(Clone)]
@@ -29,12 +31,13 @@ pub struct TrafficInterceptor {
     allow_list: Arc<RwLock<Vec<String>>>,
     request_id: Option<u64>,
     log_terminal: bool,
+    skipped: bool,
 }
 
 impl TrafficInterceptor {
     pub fn new(listener: Arc<dyn TrafficListener>, allow_list: Arc<RwLock<Vec<String>>>) -> Self {
         let log_terminal = std::env::var("LOG_TRAFFIC_TERMINAL").map(|v| v == "1").unwrap_or(false);
-        TrafficInterceptor { listener, allow_list, request_id: None, log_terminal }
+        TrafficInterceptor { listener, allow_list, request_id: None, log_terminal, skipped: false }
     }
 }
 struct RequestDuplicate {
@@ -112,6 +115,60 @@ async fn duplicate_res(res: Response<Body>) -> ResponseDuplicate {
     ResponseDuplicate { origin: res, duplicate: res1 }
 }
 
+async fn check_interception(
+    intercepted: bool,
+    uri: &str,
+    host: &str,
+    allow_list: &Arc<RwLock<Vec<String>>>,
+    listener: &Arc<dyn TrafficListener>,
+    client_addr: &str,
+) -> bool {
+    if intercepted {
+        return true;
+    }
+
+    let allow_list_guard = allow_list.read().await;
+    let mut should_intercept = false;
+
+    if !allow_list_guard.is_empty() {
+        let mut client_name = None;
+        for rule in allow_list_guard.iter() {
+            if rule.is_empty() { continue; }
+
+            if rule.starts_with("client:") {
+                let pattern = &rule[7..];
+                if client_name.is_none() {
+                    client_name = Some(listener.get_client_name(client_addr).await);
+                }
+                if let Some(name) = &client_name {
+                    if name.to_lowercase().contains(&pattern.to_lowercase()) {
+                        should_intercept = true;
+                        break;
+                    }
+                }
+            } else if uri.contains(rule) {
+                should_intercept = true;
+                break;
+            } else if host.contains(rule) {
+                should_intercept = true;
+                break;
+            }
+        }
+    }
+
+    if should_intercept {
+        if !listener.should_intercept(uri, host, client_addr).await {
+            should_intercept = false;
+        }
+    }
+
+    if !should_intercept && !intercepted && !allow_list_guard.is_empty() {
+        warn!("Interception NOT allowed for domain in URI: {} or Host: {}. Tunneling instead.", uri, host);
+    }
+
+    should_intercept
+}
+
 impl HttpHandler for TrafficInterceptor {
     fn handle_request(&mut self, _ctx: &HttpContext, req: Request<Body> ) -> impl Future<Output = RequestOrResponse> + Send {
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
@@ -121,8 +178,15 @@ impl HttpHandler for TrafficInterceptor {
         let client_addr = _ctx.client_addr.to_string();
         let intercepted = _ctx.intercepted;
         let log_terminal = self.log_terminal;
+        let allow_list = Arc::clone(&self.allow_list);
+        let uri = req.uri().to_string();
+        let host = req.headers().get("host").and_then(|h| h.to_str().ok()).map(|s| s.to_string()).unwrap_or_default();
 
         async move {
+            if !check_interception(intercepted, &uri, &host, &allow_list, &listener, &client_addr).await {
+                return RequestOrResponse::Request(req);
+            }
+
             if log_terminal {
                 println!("\x1b[32m[REQUEST  #{}]\x1b[0m {} {}", id, req.method(), req.uri());
             }
@@ -172,22 +236,11 @@ impl HttpHandler for TrafficInterceptor {
         let uri = req.uri().to_string();
         let host = req.headers().get("host").and_then(|h| h.to_str().ok()).map(|s| s.to_string()).unwrap_or_default();
         let allow_list = Arc::clone(&self.allow_list);
+        let listener = Arc::clone(&self.listener);
+        let client_addr = _ctx.client_addr.to_string();
 
         async move {
-            if intercepted {
-                return true;
-            }
-
-            let allow_list_guard = allow_list.read().await;
-
-            for domain in allow_list_guard.iter() {
-                if uri.contains(domain) || host.contains(domain) {
-                    return true;
-                }
-            }
-
-            warn!("Interception NOT allowed for domain in URI: {} or Host: {}. Tunneling instead.", uri, host);
-            false
+            check_interception(intercepted, &uri, &host, &allow_list, &listener, &client_addr).await
         }
     }
 }
