@@ -189,18 +189,39 @@ async fn check_interception(
                         break;
                     }
                 }
-            } else if wildcard_match(rule, uri) {
-                if log_logic {
-                    println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! URI: {} matches: {}", uri, rule);
+            } else {
+                let rule_has_protocol = rule.contains("://");
+                
+                // 1. Try direct match (covers strict protocol rules and raw host:port matches)
+                if wildcard_match(rule, uri) || wildcard_match(rule, host) {
+                    if log_logic {
+                        println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! matches: {}", rule);
+                    }
+                    should_intercept = true;
+                    break;
                 }
-                should_intercept = true;
-                break;
-            } else if wildcard_match(rule, host) {
-                if log_logic {
-                    println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! Host: {} matches: {}", host, rule);
+
+                // 2. If the rule is a "flexible" rule (no protocol), try matching against stripped targets
+                if !rule_has_protocol {
+                    let clean_uri = if let Some(pos) = uri.find("://") {
+                        &uri[pos + 3..]
+                    } else {
+                        uri
+                    };
+                    let clean_host = if let Some(pos) = host.find("://") {
+                        &host[pos + 3..]
+                    } else {
+                        host
+                    };
+
+                    if wildcard_match(rule, clean_uri) || wildcard_match(rule, clean_host) {
+                        if log_logic {
+                            println!("\x1b[32m[INTERCEPT]\x1b[0m Flexible rule matched! Rule: {} matches Clean URI/Host", rule);
+                        }
+                        should_intercept = true;
+                        break;
+                    }
                 }
-                should_intercept = true;
-                break;
             }
         }
     } else if log_logic {
@@ -218,6 +239,7 @@ async fn check_interception(
 
     if !should_intercept && !intercepted && !proxy_list_guard.is_empty() && log_logic {
         println!("\x1b[33m[SKIP]\x1b[0m No rules matched for: {} (Host: {})", uri, host);
+        println!("\x1b[34m[PROXY_LIST_GUARD]\x1b[0m Rules: {:?}", proxy_list_guard);
     }
 
     should_intercept
