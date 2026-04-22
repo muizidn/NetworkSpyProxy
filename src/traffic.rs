@@ -28,7 +28,7 @@ pub trait TrafficListener: Sync + Send {
 #[derive(Clone)]
 pub struct TrafficInterceptor {
     listener: Arc<dyn TrafficListener>,
-    allow_list: Arc<RwLock<Vec<String>>>,
+    proxy_intercept_list: Arc<RwLock<Vec<String>>>,
     request_id: Option<u64>,
     log_terminal: bool,
     log_interception_logic: bool,
@@ -36,7 +36,7 @@ pub struct TrafficInterceptor {
 }
 
 impl TrafficInterceptor {
-    pub fn new(listener: Arc<dyn TrafficListener>, allow_list: Arc<RwLock<Vec<String>>>) -> Self {
+    pub fn new(listener: Arc<dyn TrafficListener>, proxy_intercept_list: Arc<RwLock<Vec<String>>>) -> Self {
         let log_terminal = std::env::var("LOG_TRAFFIC_TERMINAL").map(|v| v == "1").unwrap_or(false);
         let log_interception_logic = std::env::var("PROXY_INTERCEPTION_LOGIC_LOG").map(|v| v == "1").unwrap_or(false);
 
@@ -49,7 +49,7 @@ impl TrafficInterceptor {
             }
         }
 
-        TrafficInterceptor { listener, allow_list, request_id: None, log_terminal, log_interception_logic, skipped: false }
+        TrafficInterceptor { listener, proxy_intercept_list, request_id: None, log_terminal, log_interception_logic, skipped: false }
     }
 }
 struct RequestDuplicate {
@@ -127,11 +127,38 @@ async fn duplicate_res(res: Response<Body>) -> ResponseDuplicate {
     ResponseDuplicate { origin: res, duplicate: res1 }
 }
 
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    if !pattern.contains('*') {
+        return text.contains(pattern);
+    }
+    
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if !text.starts_with(parts[0]) {
+        return false;
+    }
+    
+    let mut current_pos = parts[0].len();
+    for i in 1..parts.len() {
+        if parts[i].is_empty() {
+            if i == parts.len() - 1 {
+                return true; // Ends with *
+            }
+            continue;
+        }
+        if let Some(found_pos) = text[current_pos..].find(parts[i]) {
+            current_pos += found_pos + parts[i].len();
+        } else {
+            return false;
+        }
+    }
+    current_pos == text.len() || pattern.ends_with('*')
+}
+
 async fn check_interception(
     intercepted: bool,
     uri: &str,
     host: &str,
-    allow_list: &Arc<RwLock<Vec<String>>>,
+    proxy_intercept_list: &Arc<RwLock<Vec<String>>>,
     listener: &Arc<dyn TrafficListener>,
     client_addr: &str,
     log_logic: bool,
@@ -140,12 +167,12 @@ async fn check_interception(
         return true;
     }
 
-    let allow_list_guard = allow_list.read().await;
+    let proxy_list_guard = proxy_intercept_list.read().await;
     let mut should_intercept = false;
 
-    if !allow_list_guard.is_empty() {
+    if !proxy_list_guard.is_empty() {
         let mut client_name = None;
-        for rule in allow_list_guard.iter() {
+        for rule in proxy_list_guard.iter() {
             if rule.is_empty() { continue; }
 
             if rule.starts_with("client:") {
@@ -154,7 +181,7 @@ async fn check_interception(
                     client_name = Some(listener.get_client_name(client_addr).await);
                 }
                 if let Some(name) = &client_name {
-                    if name.to_lowercase().contains(&pattern.to_lowercase()) {
+                    if wildcard_match(&pattern.to_lowercase(), &name.to_lowercase()) {
                         if log_logic {
                             println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! Client: {} matches pattern: {}", name, pattern);
                         }
@@ -162,15 +189,15 @@ async fn check_interception(
                         break;
                     }
                 }
-            } else if uri.contains(rule) {
+            } else if wildcard_match(rule, uri) {
                 if log_logic {
-                    println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! URI: {} contains: {}", uri, rule);
+                    println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! URI: {} matches: {}", uri, rule);
                 }
                 should_intercept = true;
                 break;
-            } else if host.contains(rule) {
+            } else if wildcard_match(rule, host) {
                 if log_logic {
-                    println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! Host: {} contains: {}", host, rule);
+                    println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! Host: {} matches: {}", host, rule);
                 }
                 should_intercept = true;
                 break;
@@ -189,7 +216,7 @@ async fn check_interception(
         }
     }
 
-    if !should_intercept && !intercepted && !allow_list_guard.is_empty() && log_logic {
+    if !should_intercept && !intercepted && !proxy_list_guard.is_empty() && log_logic {
         println!("\x1b[33m[SKIP]\x1b[0m No rules matched for: {} (Host: {})", uri, host);
     }
 
@@ -255,13 +282,13 @@ impl HttpHandler for TrafficInterceptor {
         let intercepted = _ctx.intercepted;
         let uri = req.uri().to_string();
         let host = req.headers().get("host").and_then(|h| h.to_str().ok()).map(|s| s.to_string()).unwrap_or_default();
-        let allow_list = Arc::clone(&self.allow_list);
+        let proxy_intercept_list = Arc::clone(&self.proxy_intercept_list);
         let listener = Arc::clone(&self.listener);
         let client_addr = _ctx.client_addr.to_string();
         let log_logic = self.log_interception_logic;
 
         async move {
-            check_interception(intercepted, &uri, &host, &allow_list, &listener, &client_addr, log_logic).await
+            check_interception(intercepted, &uri, &host, &proxy_intercept_list, &listener, &client_addr, log_logic).await
         }
     }
 }
