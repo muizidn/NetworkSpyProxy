@@ -142,28 +142,34 @@ async fn check_interception(
                 }
                 if let Some(name) = &client_name {
                     if name.to_lowercase().contains(&pattern.to_lowercase()) {
+                        println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! Client: {} matches pattern: {}", name, pattern);
                         should_intercept = true;
                         break;
                     }
                 }
             } else if uri.contains(rule) {
+                println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! URI: {} contains: {}", uri, rule);
                 should_intercept = true;
                 break;
             } else if host.contains(rule) {
+                println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! Host: {} contains: {}", host, rule);
                 should_intercept = true;
                 break;
             }
         }
+    } else {
+        println!("\x1b[33m[SKIP]\x1b[0m Allow list is empty. Skipping: {}", uri);
     }
 
     if should_intercept {
         if !listener.should_intercept(uri, host, client_addr).await {
+            println!("\x1b[31m[REJECT]\x1b[0m Rule matched but listener REJECTED: {}", uri);
             should_intercept = false;
         }
     }
 
     if !should_intercept && !intercepted && !allow_list_guard.is_empty() {
-        warn!("Interception NOT allowed for domain in URI: {} or Host: {}. Tunneling instead.", uri, host);
+        println!("\x1b[33m[SKIP]\x1b[0m No rules matched for: {} (Host: {})", uri, host);
     }
 
     should_intercept
@@ -178,15 +184,8 @@ impl HttpHandler for TrafficInterceptor {
         let client_addr = _ctx.client_addr.to_string();
         let intercepted = _ctx.intercepted;
         let log_terminal = self.log_terminal;
-        let allow_list = Arc::clone(&self.allow_list);
-        let uri = req.uri().to_string();
-        let host = req.headers().get("host").and_then(|h| h.to_str().ok()).map(|s| s.to_string()).unwrap_or_default();
 
         async move {
-            if !check_interception(intercepted, &uri, &host, &allow_list, &listener, &client_addr).await {
-                return RequestOrResponse::Request(req);
-            }
-
             if log_terminal {
                 println!("\x1b[32m[REQUEST  #{}]\x1b[0m {} {}", id, req.method(), req.uri());
             }
