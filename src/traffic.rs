@@ -31,13 +31,25 @@ pub struct TrafficInterceptor {
     allow_list: Arc<RwLock<Vec<String>>>,
     request_id: Option<u64>,
     log_terminal: bool,
+    log_interception_logic: bool,
     skipped: bool,
 }
 
 impl TrafficInterceptor {
     pub fn new(listener: Arc<dyn TrafficListener>, allow_list: Arc<RwLock<Vec<String>>>) -> Self {
         let log_terminal = std::env::var("LOG_TRAFFIC_TERMINAL").map(|v| v == "1").unwrap_or(false);
-        TrafficInterceptor { listener, allow_list, request_id: None, log_terminal, skipped: false }
+        let log_interception_logic = std::env::var("PROXY_INTERCEPTION_LOGIC_LOG").map(|v| v == "1").unwrap_or(false);
+
+        if cfg!(debug_assertions) {
+            if !log_terminal {
+                println!("\x1b[32m[INFO]\x1b[0m Traffic terminal logging is disabled. Enable with LOG_TRAFFIC_TERMINAL=1");
+            }
+            if !log_interception_logic {
+                println!("\x1b[32m[INFO]\x1b[0m Interception logic logging is disabled. Enable with PROXY_INTERCEPTION_LOGIC_LOG=1");
+            }
+        }
+
+        TrafficInterceptor { listener, allow_list, request_id: None, log_terminal, log_interception_logic, skipped: false }
     }
 }
 struct RequestDuplicate {
@@ -122,6 +134,7 @@ async fn check_interception(
     allow_list: &Arc<RwLock<Vec<String>>>,
     listener: &Arc<dyn TrafficListener>,
     client_addr: &str,
+    log_logic: bool,
 ) -> bool {
     if intercepted {
         return true;
@@ -142,33 +155,41 @@ async fn check_interception(
                 }
                 if let Some(name) = &client_name {
                     if name.to_lowercase().contains(&pattern.to_lowercase()) {
-                        println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! Client: {} matches pattern: {}", name, pattern);
+                        if log_logic {
+                            println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! Client: {} matches pattern: {}", name, pattern);
+                        }
                         should_intercept = true;
                         break;
                     }
                 }
             } else if uri.contains(rule) {
-                println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! URI: {} contains: {}", uri, rule);
+                if log_logic {
+                    println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! URI: {} contains: {}", uri, rule);
+                }
                 should_intercept = true;
                 break;
             } else if host.contains(rule) {
-                println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! Host: {} contains: {}", host, rule);
+                if log_logic {
+                    println!("\x1b[32m[INTERCEPT]\x1b[0m Rule matched! Host: {} contains: {}", host, rule);
+                }
                 should_intercept = true;
                 break;
             }
         }
-    } else {
+    } else if log_logic {
         println!("\x1b[33m[SKIP]\x1b[0m Allow list is empty. Skipping: {}", uri);
     }
 
     if should_intercept {
         if !listener.should_intercept(uri, host, client_addr).await {
-            println!("\x1b[31m[REJECT]\x1b[0m Rule matched but listener REJECTED: {}", uri);
+            if log_logic {
+                println!("\x1b[31m[REJECT]\x1b[0m Rule matched but listener REJECTED: {}", uri);
+            }
             should_intercept = false;
         }
     }
 
-    if !should_intercept && !intercepted && !allow_list_guard.is_empty() {
+    if !should_intercept && !intercepted && !allow_list_guard.is_empty() && log_logic {
         println!("\x1b[33m[SKIP]\x1b[0m No rules matched for: {} (Host: {})", uri, host);
     }
 
@@ -237,9 +258,10 @@ impl HttpHandler for TrafficInterceptor {
         let allow_list = Arc::clone(&self.allow_list);
         let listener = Arc::clone(&self.listener);
         let client_addr = _ctx.client_addr.to_string();
+        let log_logic = self.log_interception_logic;
 
         async move {
-            check_interception(intercepted, &uri, &host, &allow_list, &listener, &client_addr).await
+            check_interception(intercepted, &uri, &host, &allow_list, &listener, &client_addr, log_logic).await
         }
     }
 }
