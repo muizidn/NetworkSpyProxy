@@ -254,6 +254,8 @@ impl HttpHandler for TrafficInterceptor {
         let client_addr = _ctx.client_addr.to_string();
         let intercepted = _ctx.intercepted;
         let log_terminal = self.log_terminal;
+        let proxy_intercept_list = Arc::clone(&self.proxy_intercept_list);
+        let log_logic = self.log_interception_logic;
 
         async move {
             if log_terminal {
@@ -261,7 +263,18 @@ impl HttpHandler for TrafficInterceptor {
             }
 
             let d = duplicate_req(req).await;
-            let modified = listener.request(id, d.duplicate, intercepted, client_addr).await;
+            
+            // Re-calculate interception status for the listener to ensure CONNECT 
+            // requests correctly reflect their "to-be-intercepted" state.
+            // Documentation: 
+            // - If a CONNECT request is NOT to be intercepted, intercepted=false will be sent to the listener.
+            // - If a CONNECT request IS to be intercepted, intercepted=true will be sent, 
+            //   allowing the listener to filter it out from the UI since decrypted traffic follows.
+            let uri = d.duplicate.uri().to_string();
+            let host = d.duplicate.headers().get("host").and_then(|h| h.to_str().ok()).map(|s| s.to_string()).unwrap_or_default();
+            let should_intercept = check_interception(intercepted, &uri, &host, &proxy_intercept_list, &listener, &client_addr, log_logic).await;
+
+            let modified = listener.request(id, d.duplicate, should_intercept, client_addr).await;
 
             let (mut parts, _) = d.origin.into_parts();
             let (m_parts, m_body) = modified.into_parts();
