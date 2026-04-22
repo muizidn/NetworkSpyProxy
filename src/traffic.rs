@@ -20,9 +20,6 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
  
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProxyRule {
-    pub id: String,
-    pub enabled: bool,
-    pub name: String,
     pub pattern: String,
     pub client: Option<String>,
     pub action: String, // "INTERCEPT" | "TUNNEL"
@@ -190,8 +187,6 @@ async fn check_interception(
         let mut client_name: Option<String> = None;
         
         for rule in proxy_list_guard.iter() {
-            if !rule.enabled { continue; }
-
             let mut pattern_match = false;
             let mut client_match = false;
 
@@ -235,7 +230,7 @@ async fn check_interception(
             // Rule matches if BOTH pattern and client criteria are satisfied (if they exist)
             if pattern_match && client_match {
                 if log_logic {
-                    println!("\x1b[32m[MATCH]\x1b[0m Rule '{}' matched! Action: {}", rule.name, rule.action);
+                    println!("\x1b[32m[MATCH]\x1b[0m Rule matched pattern: {} Action: {}", rule.pattern, rule.action);
                 }
                 final_action = rule.action.clone();
                 matched = true;
