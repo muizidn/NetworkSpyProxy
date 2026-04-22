@@ -13,7 +13,7 @@ use std::{
 use tokio::sync::{Notify, RwLock};
 use tracing::*;
 
-use crate::traffic::{TrafficInterceptor, TrafficListener};
+use crate::traffic::{TrafficInterceptor, TrafficListener, ProxyRule};
 
 pub struct Proxy {
     key_pair: &'static str,
@@ -37,7 +37,7 @@ impl Proxy {
     pub async fn run_proxy(
         &mut self,
         listener: Arc<dyn TrafficListener + Send + Sync>,
-        allow_list: Arc<RwLock<Vec<String>>>,
+        allow_list: Arc<RwLock<Vec<ProxyRule>>>,
     ) {
         // tracing_subscriber::fmt::init(); // Handled by caller or globally
 
