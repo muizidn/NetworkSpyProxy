@@ -175,13 +175,16 @@ async fn check_interception(
     client_addr: &str,
     log_logic: bool,
 ) -> bool {
-    if intercepted {
-        return true;
-    }
-
     let proxy_list_guard: tokio::sync::RwLockReadGuard<'_, Vec<ProxyRule>> = proxy_intercept_list.read().await;
     let mut final_action = "TUNNEL".to_string(); // Default to tunnel
     let mut matched = false;
+
+    let list_len = proxy_list_guard.len();
+    if list_len == 0 {
+        if log_logic {
+        println!("\x1b[33m[PROXY_CHECK]\x1b[0m Intercept list is EMPTY! uri=\"{}\" host=\"{}\" intercepted={} => returning false (TUNNEL)", uri, host, intercepted);
+        }
+    }
 
     if !proxy_list_guard.is_empty() {
         let mut client_name: Option<String> = None;
@@ -241,6 +244,13 @@ async fn check_interception(
 
     let should_intercept = matched && final_action == "INTERCEPT";
 
+    if log_logic || cfg!(debug_assertions) {
+        let decision = if should_intercept { "INTERCEPT" } else { "TUNNEL" };
+        if log_logic {
+            println!("\x1b[36m[PROXY_CHECK]\x1b[0m uri=\"{}\" host=\"{}\" list_len={} matched={} action={} decision={} intercepted={}", uri, host, list_len, matched, final_action, decision, intercepted);
+        }
+    }
+
     if should_intercept {
         if !listener.should_intercept(uri, host, client_addr).await {
             if log_logic {
@@ -278,7 +288,9 @@ impl HttpHandler for TrafficInterceptor {
             let d = duplicate_req(req).await;
             
             let uri = d.duplicate.uri().to_string();
+            let method = d.duplicate.method().as_str().to_string();
             let host = d.duplicate.headers().get("host").and_then(|h| h.to_str().ok()).map(|s| s.to_string()).unwrap_or_default();
+            println!("\x1b[35m[PROXY_HANDLE_REQUEST]\x1b[0m id={} method={} uri=\"{}\" host=\"{}\" intercepted={}", id, method, uri, host, intercepted);
             let should_intercept = check_interception(intercepted, &uri, &host, &proxy_intercept_list, &listener, &client_addr, log_logic).await;
 
             let modified = listener.request(id, d.duplicate, should_intercept, client_addr).await;
@@ -323,6 +335,7 @@ impl HttpHandler for TrafficInterceptor {
     fn should_intercept(&mut self, _ctx: &HttpContext, req: &Request<Body>) -> impl Future<Output = bool> + Send {
         let intercepted = _ctx.intercepted;
         let uri = req.uri().to_string();
+        let method = req.method().as_str().to_string();
         let host = req.headers().get("host").and_then(|h| h.to_str().ok()).map(|s| s.to_string()).unwrap_or_default();
         let proxy_intercept_list = Arc::clone(&self.proxy_intercept_list);
         let listener = Arc::clone(&self.listener);
@@ -330,7 +343,9 @@ impl HttpHandler for TrafficInterceptor {
         let log_logic = self.log_interception_logic;
 
         async move {
-            check_interception(intercepted, &uri, &host, &proxy_intercept_list, &listener, &client_addr, log_logic).await
+            let result = check_interception(intercepted, &uri, &host, &proxy_intercept_list, &listener, &client_addr, log_logic).await;
+            println!("\x1b[33m[PROXY_SHOULD_INTERCEPT]\x1b[0m method={} uri=\"{}\" host=\"{}\" client=\"{}\" => {}", method, uri, host, client_addr, if result { "INTERCEPT" } else { "TUNNEL" });
+            result
         }
     }
 }
